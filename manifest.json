@@ -1,0 +1,10 @@
+{
+  "name": "Flick Match",
+  "short_name": "FlickMatch",
+  "start_url": "index.html",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#0d3d1a",
+  "theme_color": "#1b6b2f",
+  "icons": []
+}
