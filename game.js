@@ -69,6 +69,8 @@ const cpuTeam = [
 const allPlayers = myTeam.concat(cpuTeam);
 
 const DRIBBLE_SPEED = 2.1;   // your carrier when you drag them
+const AUTO_RUN_SPEED = 1.6;  // your carrier running on by themselves after receiving
+const LEAD_DIST = 35;       // how far ahead of a running teammate a pass is played
 const SUPPORT_SPEED = 1.7;   // teammates making runs
 const PRESS_SPEED_YOU = 1.5; // your player chasing the CPU carrier
 const PRESS_SPEED_CPU = 1.2; // CPU player chasing your carrier
@@ -83,6 +85,8 @@ function giveBall(p) {
   ball.y = p.y;
   ball.protect = PROTECT_STEPS;
   ball.passTarget = null;
+  ball.passPoint = null;
+  ball.autoRun = false;
 }
 giveBall(myTeam[0]);
 
@@ -195,15 +199,29 @@ function computeFlick(owner, dx, dy) {
     if (align > 0.9 && align > bestScore) { best = mate; bestScore = align; }
   }
   let power = Math.min(dist / 12, 14) + 4;
+  let point = null;
   if (best) {
-    const mx = best.x - owner.x, my = best.y - owner.y;
-    const md = Math.hypot(mx, my);
+    // Lead the pass: play it into the space the teammate is running into
+    point = receivePoint(best);
+    const mx = point.x - owner.x, my = point.y - owner.y;
+    const md = Math.max(1, Math.hypot(mx, my));
     aimX = mx / md;
     aimY = my / md;
-    // Just enough power to roll to the teammate and stop near them
+    // Just enough power to roll to that spot and stop near it
     power = Math.max(4, Math.min(md / 28, 14));
   }
-  return { aimX, aimY, power, target: best };
+  return { aimX, aimY, power, target: best, point };
+}
+
+function receivePoint(mate) {
+  let dx = 0, dy = -0.4; // always lean toward the opponent's goal
+  const sp = Math.hypot(mate.vx, mate.vy);
+  if (sp > 0.4) { dx += (mate.vx / sp) * 0.6; dy += (mate.vy / sp) * 0.6; }
+  const n = Math.hypot(dx, dy) || 1;
+  return {
+    x: Math.max(24, Math.min(W - 24, mate.x + (dx / n) * LEAD_DIST)),
+    y: Math.max(60, Math.min(H - 60, mate.y + (dy / n) * LEAD_DIST))
+  };
 }
 
 // ---------- Input: swipe to flick ----------
@@ -245,12 +263,13 @@ function up(e) {
   const dist = Math.hypot(dx, dy);
   const mode = drag.mode;
   drag = null;
-  if (mode === 'dribble') return; // letting go just stops the run
+  if (mode === 'dribble') return; // letting go: the player runs on by themselves
   if (dist < 20 || !ball.owner || ball.owner.team === 'cpu' || celebrate > 0 || timeLeft <= 0) return;
   const f = computeFlick(ball.owner, dx, dy);
   kick(ball.owner, f.aimX * f.power, f.aimY * f.power, f.power);
   ball.cooldown = 12;
   ball.passTarget = f.target;
+  ball.passPoint = f.point;
 }
 
 canvas.addEventListener('mousedown', down);
@@ -310,6 +329,26 @@ function supportSpot(i, c, cover) {
   return { x: clampX(x), y: clampY(y) };
 }
 
+// Carry the ball upfield: keep some momentum, drift toward the middle, and swerve around defenders
+function autoRun(o) {
+  let dx = 0, dy = -1;
+  const sp = Math.hypot(o.vx, o.vy);
+  if (sp > 0.3) { dx += (o.vx / sp) * 0.6; dy += (o.vy / sp) * 0.6; }
+  dx += ((W / 2 - o.x) / 200) * 0.5;
+  for (const c of cpuTeam) {
+    const ax = o.x - c.x, ay = o.y - c.y, d = Math.hypot(ax, ay);
+    if (d < 85 && d > 0.01 && c.y < o.y + 10) {
+      const w = ((85 - d) / 85) * 1.6;
+      dx += (ax / d) * w;
+      dy += (ay / d) * w * 0.5;
+    }
+  }
+  if (o.y < 100) dy = Math.max(0, dy); // don't run into the goal; wait for you to shoot
+  const n = Math.hypot(dx, dy);
+  if (n < 0.05) return;
+  moveToward(o, o.x + (dx / n) * 20, o.y + (dy / n) * 20, AUTO_RUN_SPEED);
+}
+
 // Your back player guards the goal: tracks the ball and moves to where a shot will cross
 function keeperStep(p) {
   const GK_Y = 612;
@@ -339,10 +378,15 @@ function myTeamStep() {
   const o = ball.owner;
   const keeper = pickKeeper(o);
 
-  // You control the carrier by dragging them
-  if (o && o.team === 'you' && drag && drag.mode === 'dribble') {
-    moveToward(o, drag.cx, drag.cy, DRIBBLE_SPEED);
-    hintTimer = Math.min(hintTimer, 60);
+  // Your carrier: drag to steer, otherwise they keep running on with the ball after receiving it
+  if (o && o.team === 'you') {
+    if (drag && drag.mode === 'dribble') {
+      moveToward(o, drag.cx, drag.cy, DRIBBLE_SPEED);
+      ball.autoRun = true;
+      hintTimer = Math.min(hintTimer, 60);
+    } else if (ball.autoRun) {
+      autoRun(o);
+    }
   }
 
   const outfield = myTeam.filter(p => p !== keeper);
@@ -360,8 +404,9 @@ function myTeamStep() {
       moveToward(p, s.x, s.y, p === cover ? 2.2 : SUPPORT_SPEED);
     } else if (!o) {
       if (ball.passTarget === p) {
-        // Receiver waits for the pass, then steps in to meet it
-        if (Math.hypot(ball.x - p.x, ball.y - p.y) < 90) moveToward(p, ball.x, ball.y, 1.8);
+        // Receiver keeps running onto the pass, then attacks the ball when it is close
+        if (Math.hypot(ball.x - p.x, ball.y - p.y) < 70) moveToward(p, ball.x, ball.y, 2.0);
+        else if (ball.passPoint) moveToward(p, ball.passPoint.x, ball.passPoint.y, SUPPORT_SPEED);
       } else if (p === chaser) {
         moveToward(p, ball.x, ball.y, 1.8);
       } else {
@@ -448,6 +493,7 @@ function gameStep() {
           if (p.team === 'cpu' && speed > 9 && Math.random() < 0.6) continue;
           giveBall(p);
           catchFx(p);
+          if (p.team === 'you') ball.autoRun = true; // receive on the run
           break;
         }
       }
@@ -514,6 +560,7 @@ function gameStep() {
         sparks(o.x, o.y);
         giveBall(c);
         c.catchFx = 1;
+        if (c.team === 'you') ball.autoRun = true;
         shake = Math.max(shake, 4);
         if (o.team === 'you') flash('Lost it!', 'red');
         else flash('Won it!', 'white');
@@ -858,15 +905,22 @@ function drawAim(o, ox, oy, bx, by) {
   ctx.save();
   ctx.globalAlpha = dist >= 20 ? 1 : 0.4;
   if (f.target) {
-    // Snapped pass: dotted path to the teammate plus a target ring
-    const tx = f.target.x, ty = f.target.y;
-    const d = Math.hypot(tx - bx, ty - by);
+    // Snapped pass: dotted path to the spot the teammate is running into, plus a ring on them
+    const qx = f.point.x, qy = f.point.y;
+    const qd = Math.hypot(qx - bx, qy - by);
     const offset = (tick * 0.8) % 12;
-    for (let s = 14 + offset; s < d - 20; s += 12) {
-      const k = s / d;
+    for (let s = 14 + offset; s < qd - 8; s += 12) {
+      const k = s / qd;
       ctx.fillStyle = 'rgba(255,255,255,' + (0.95 - 0.5 * k) + ')';
-      circle(bx + (tx - bx) * k, by + (ty - by) * k, 2.6); ctx.fill();
+      circle(bx + (qx - bx) * k, by + (qy - by) * k, 2.6); ctx.fill();
     }
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 2;
+    circle(qx, qy, 6); ctx.stroke();
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.moveTo(f.target.x, f.target.y); ctx.lineTo(qx, qy); ctx.stroke();
+    ctx.setLineDash([]);
+    const tx = f.target.x, ty = f.target.y;
     ctx.strokeStyle = '#ffe14d';
     ctx.lineWidth = 3;
     const pr = f.target.r + 8 + Math.sin(tick * 0.25) * 2.5;
@@ -1104,9 +1158,9 @@ function drawHint() {
   ctx.font = 'bold 13px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const lines = ['Hold your player & drag to run', 'Swipe anywhere else to pass or shoot'];
+  const lines = ['Your receiver runs on - drag to steer', 'Swipe anywhere else to pass or shoot'];
   ctx.fillStyle = 'rgba(6,18,10,0.75)';
-  roundRect(W / 2 - 135, H - 92, 270, 46, 12); ctx.fill();
+  roundRect(W / 2 - 145, H - 92, 290, 46, 12); ctx.fill();
   ctx.fillStyle = '#ffffff';
   ctx.fillText(lines[0], W / 2, H - 78);
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
