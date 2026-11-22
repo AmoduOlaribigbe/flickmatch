@@ -84,7 +84,43 @@ const SUPPORT_SPEED = 1.7;   // teammates making runs
 const PRESS_SPEED_YOU = 1.5; // your player chasing the CPU carrier
 const PRESS_SPEED_CPU = 1.2; // CPU player chasing your carrier
 const PROTECT_STEPS = 30;    // no tackles for half a second after getting the ball
-let hintTimer = 60 * 8;
+let hintTimer = 0;
+
+// ---------- Control modes ----------
+// 'buttons' (touch joystick + buttons), 'swipe' (classic flicks), 'keyboard', 'gamepad'
+const MODES = {
+  buttons: {
+    name: 'Touch buttons',
+    help: '<b>Left thumb</b>: move. <b>PASS</b>, <b>SHOOT</b> (hold for power), <b>THROUGH</b>, <b>LOB</b>, <b>SPRINT</b>.<br>Defending: <b>PRESS</b> (hold), <b>TACKLE</b>, <b>SWITCH</b>.',
+    hint: ['Left thumb: move  -  PASS / SHOOT (hold)', 'Defending: PRESS, TACKLE, SWITCH']
+  },
+  swipe: {
+    name: 'Swipe',
+    help: 'Swipe anywhere to pass or shoot. Hold your player and drag to steer. Receivers run on with the ball.',
+    hint: ['Your receiver runs on - drag to steer', 'Swipe anywhere else to pass or shoot']
+  },
+  keyboard: {
+    name: 'Keyboard',
+    help: '<b>Move</b> WASD / arrows &nbsp; <b>Pass</b> J or Space &nbsp; <b>Shoot</b> K (hold)<br><b>Through</b> L &nbsp; <b>Lob</b> U &nbsp; <b>Sprint</b> Shift &nbsp; <b>Switch</b> Q &nbsp; <b>Pause</b> Esc<br>Defending: J press, K tackle',
+    hint: ['Move WASD/arrows - Pass J - Shoot K (hold)', 'Through L - Lob U - Sprint Shift - Switch Q']
+  },
+  gamepad: {
+    name: 'Gamepad',
+    help: '<b>Move</b> left stick / d-pad &nbsp; <b>A</b> pass &nbsp; <b>B</b> shoot (hold)<br><b>Y</b> through &nbsp; <b>X</b> lob &nbsp; <b>RB/RT</b> sprint &nbsp; <b>LB</b> switch &nbsp; <b>Start</b> pause<br>Defending: A press, B tackle, X switch',
+    hint: ['Stick move - A pass - B shoot (hold)', 'Y through - X lob - RT sprint - LB switch']
+  }
+};
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } }
+};
+const isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) || ('ontouchstart' in window);
+const savedMode = store.get('fm-controls');
+let controlMode = MODES[savedMode] ? savedMode : (isTouchDevice ? 'buttons' : 'keyboard');
+const direct = () => controlMode !== 'swipe';
+let menuOpen = true, matchStarted = false;
+let controlled = myTeam[0];   // the player you steer in direct-control modes
+let shotCharge = 0, charging = false;
 
 function giveBall(p) {
   ball.owner = p;
@@ -96,6 +132,11 @@ function giveBall(p) {
   ball.passTarget = null;
   ball.passPoint = null;
   ball.autoRun = false;
+  ball.air = false;
+  // Direct control follows the ball: you steer whoever has it, or the nearest defender when the CPU has it
+  if (p.team === 'you') controlled = p;
+  else controlled = nearest(myTeam, p.x, p.y, keeperRef) || controlled;
+  charging = false; shotCharge = 0;
 }
 giveBall(myTeam[0]);
 
@@ -247,10 +288,13 @@ function pos(e) {
 
 function down(e) {
   e.preventDefault();
+  if (menuOpen) return;
+  if (e.touches) useDevice('buttons');
   if (timeLeft <= 0 && celebrate === 0) {
     if (endFade > 0.6) restart();
     return;
   }
+  if (controlMode !== 'swipe') return;
   const s = pos(e);
   const g = screenToPitch(s.x, s.y) || { x: ball.x, y: ball.y };
   // Touching your ball carrier starts a dribble; touching anywhere else starts a flick
@@ -316,6 +360,338 @@ function restart() {
   reset(true);
   hintTimer = 60 * 5;
   flash('KICK OFF', 'white');
+}
+
+// =====================================================================
+// Direct control input: keyboard, gamepad and on-screen touch buttons
+// =====================================================================
+const BTNS = ['A', 'B', 'X', 'Y', 'SW', 'SPRINT'];
+const held = {}, kbHeld = {}, touchHeld = {};
+let padHeld = {};
+const latchP = {}, latchR = {}; // presses / releases waiting for the next simulation step
+const stick = { x: 0, y: 0 };
+function pressBtn(b) { latchP[b] = true; }
+function releaseBtn(b) { latchR[b] = true; }
+function consume(b) { const v = !!latchP[b]; latchP[b] = false; return v; }
+function consumeR(b) { const v = !!latchR[b]; latchR[b] = false; return v; }
+function clearInput() {
+  for (const b of BTNS.concat(['PAUSE'])) { latchP[b] = latchR[b] = false; kbHeld[b] = touchHeld[b] = false; }
+  keysDown.clear();
+  tstick.x = tstick.y = 0;
+}
+
+// ----- Keyboard -----
+const KEYMAP = { KeyJ: 'A', Space: 'A', Enter: 'A', KeyK: 'B', KeyU: 'X', KeyL: 'Y', KeyQ: 'SW', ShiftLeft: 'SPRINT', ShiftRight: 'SPRINT', Escape: 'PAUSE', KeyP: 'PAUSE' };
+const MOVEKEYS = { KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
+const keysDown = new Set();
+window.addEventListener('keydown', function (e) {
+  const b = KEYMAP[e.code], mv = MOVEKEYS[e.code];
+  if (!b && !mv) return;
+  e.preventDefault();
+  useDevice('keyboard');
+  if (menuOpen) { if (!e.repeat) menuInput(b || (mv[1] ? (mv[1] < 0 ? 'UP' : 'DOWN') : (mv[0] < 0 ? 'LEFT' : 'RIGHT'))); return; }
+  if (e.repeat) return;
+  keysDown.add(e.code);
+  if (b) { kbHeld[b] = true; pressBtn(b); }
+});
+window.addEventListener('keyup', function (e) {
+  keysDown.delete(e.code);
+  const b = KEYMAP[e.code];
+  if (b && kbHeld[b]) { kbHeld[b] = false; releaseBtn(b); }
+});
+
+// ----- Gamepad (standard mapping: A0 B1 X2 Y3 LB4 RB5 LT6 RT7 Back8 Start9, d-pad 12-15) -----
+const PADMAP = { 0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'SW', 5: 'SPRINT', 6: 'SPRINT', 7: 'SPRINT', 8: 'PAUSE', 9: 'PAUSE' };
+let padPrev = [], padNav = { x: 0, y: 0 }, padName = '';
+function readPad() {
+  padHeld = {};
+  let pad = null;
+  if (typeof navigator !== 'undefined' && navigator.getGamepads) {
+    for (const p of navigator.getGamepads()) if (p && p.connected) { pad = p; break; }
+  }
+  padName = pad ? pad.id : '';
+  if (!pad) { padPrev = []; return { x: 0, y: 0 }; }
+  const on = i => !!(pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > 0.5));
+  const now = pad.buttons.map((_, i) => on(i));
+  let x = pad.axes[0] || 0, y = pad.axes[1] || 0;
+  if (Math.hypot(x, y) < 0.22) { x = 0; y = 0; }
+  if (on(14)) x = -1; if (on(15)) x = 1; if (on(12)) y = -1; if (on(13)) y = 1;
+  let used = x !== 0 || y !== 0;
+  for (const i in PADMAP) {
+    const b = PADMAP[i];
+    if (now[i]) { padHeld[b] = true; used = true; }
+    if (now[i] && !padPrev[i]) { if (menuOpen) menuInput(b); else pressBtn(b); }
+    if (!now[i] && padPrev[i] && !menuOpen) releaseBtn(b);
+  }
+  if (used) useDevice('gamepad');
+  if (menuOpen) {
+    const ny = y < -0.5 ? -1 : (y > 0.5 ? 1 : 0), nx = x < -0.5 ? -1 : (x > 0.5 ? 1 : 0);
+    if (ny && ny !== padNav.y) menuInput(ny < 0 ? 'UP' : 'DOWN');
+    if (nx && nx !== padNav.x) menuInput(nx < 0 ? 'LEFT' : 'RIGHT');
+    padNav = { x: nx, y: ny };
+  }
+  padPrev = now;
+  return { x, y };
+}
+
+// ----- On-screen joystick and buttons -----
+const $ = id => document.getElementById(id);
+const touchCtl = $('touchCtl'), stickZone = $('stickZone'), stickBase = $('stickBase'), stickKnob = $('stickKnob');
+const tstick = { x: 0, y: 0 };
+let stickPtr = null, stickOrigin = { x: 0, y: 0 };
+function updateStick(e) {
+  const dx = e.clientX - stickOrigin.x, dy = e.clientY - stickOrigin.y, d = Math.hypot(dx, dy), R = 45;
+  const k = d > R ? R / d : 1;
+  stickKnob.style.transform = 'translate(' + (dx * k) + 'px,' + (dy * k) + 'px)';
+  tstick.x = d < 6 ? 0 : (dx * k) / R;
+  tstick.y = d < 6 ? 0 : (dy * k) / R;
+}
+function endStick() {
+  stickPtr = null;
+  tstick.x = tstick.y = 0;
+  stickKnob.style.transform = '';
+  stickBase.style.left = ''; stickBase.style.top = '';
+}
+stickZone.addEventListener('pointerdown', function (e) {
+  e.preventDefault();
+  useDevice('buttons');
+  stickPtr = e.pointerId;
+  if (stickZone.setPointerCapture) stickZone.setPointerCapture(e.pointerId);
+  const r = stickZone.getBoundingClientRect();
+  stickOrigin = { x: e.clientX, y: e.clientY };
+  stickBase.style.left = (e.clientX - r.left) + 'px';
+  stickBase.style.top = (e.clientY - r.top) + 'px';
+  updateStick(e);
+});
+stickZone.addEventListener('pointermove', function (e) { if (e.pointerId === stickPtr) updateStick(e); });
+stickZone.addEventListener('pointerup', function (e) { if (e.pointerId === stickPtr) endStick(); });
+stickZone.addEventListener('pointercancel', function (e) { if (e.pointerId === stickPtr) endStick(); });
+
+const btnEls = Array.prototype.slice.call(document.querySelectorAll('.cbtn'));
+btnEls.forEach(function (el) {
+  const b = el.dataset.b;
+  el.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    useDevice('buttons');
+    if (el.setPointerCapture) el.setPointerCapture(e.pointerId);
+    if (timeLeft <= 0 && celebrate === 0 && endFade > 0.6) { restart(); return; }
+    touchHeld[b] = true;
+    pressBtn(b);
+    el.classList.add('on');
+  });
+  const up = function () { if (!touchHeld[b]) return; touchHeld[b] = false; releaseBtn(b); el.classList.remove('on'); };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('lostpointercapture', up);
+});
+$('ui').addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+// Button labels change between attacking and defending
+let labelState = '';
+function updateButtonLabels() {
+  const attacking = ball.owner && ball.owner.team === 'you';
+  const st = attacking ? 'att' : 'def';
+  if (st === labelState) return;
+  labelState = st;
+  const labels = attacking ? { A: 'PASS', B: 'SHOOT', X: 'LOB', Y: 'THROUGH', SPRINT: 'SPRINT' } : { A: 'PRESS', B: 'TACKLE', X: 'SWITCH', Y: 'SWITCH', SPRINT: 'SPRINT' };
+  btnEls.forEach(function (el) { el.textContent = labels[el.dataset.b]; });
+}
+
+// ----- Merge all devices once per frame -----
+function pollInput() {
+  const pad = readPad();
+  let kx = 0, ky = 0;
+  for (const c of keysDown) { const m = MOVEKEYS[c]; if (m) { kx += m[0]; ky += m[1]; } }
+  let x = kx + pad.x + tstick.x, y = ky + pad.y + tstick.y;
+  const m = Math.hypot(x, y);
+  if (m > 1) { x /= m; y /= m; }
+  stick.x = x; stick.y = y;
+  for (const b of BTNS) held[b] = !!(kbHeld[b] || padHeld[b] || touchHeld[b]);
+  if (latchP.PAUSE) { latchP.PAUSE = false; if (!menuOpen) openMenu(); }
+  // A press restarts after full time
+  if (!menuOpen && timeLeft <= 0 && celebrate === 0 && latchP.A) { latchP.A = false; if (endFade > 0.6) restart(); }
+}
+
+// ----- Switching devices automatically -----
+let toastTimer = null;
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.classList.remove('show'); }, 1800);
+}
+function useDevice(m) {
+  if (controlMode === m) return;
+  if (m === 'buttons' && controlMode === 'swipe') return; // both are touch; keep the player's choice
+  setMode(m, !menuOpen);
+}
+function setMode(m, announce) {
+  controlMode = m;
+  store.set('fm-controls', m);
+  drag = null;
+  charging = false;
+  touchCtl.hidden = menuOpen || m !== 'buttons';
+  menuOpts.forEach(function (el) { el.classList.toggle('sel', el.dataset.mode === m); });
+  $('help').innerHTML = MODES[m].help;
+  if (announce) toast(MODES[m].name + ' controls');
+  if (!menuOpen) hintTimer = Math.max(hintTimer, 60 * 4);
+}
+
+// ----- Menu (also navigable with keyboard and gamepad) -----
+const menuEl = $('menu');
+const menuOpts = Array.prototype.slice.call(document.querySelectorAll('#menu .mi'));
+const startBtn = $('startBtn'), restartBtn = $('restartBtn');
+let menuFocus = 0;
+function navItems() { return Array.prototype.slice.call(document.querySelectorAll('#menu .nav')).filter(function (el) { return !el.hidden; }); }
+function refreshFocus() {
+  const items = navItems();
+  menuFocus = Math.max(0, Math.min(items.length - 1, menuFocus));
+  items.forEach(function (el, i) { el.classList.toggle('focus', i === menuFocus); });
+}
+function menuInput(b) {
+  const items = navItems();
+  // Layout: options in a 2x2 grid (0 1 / 2 3), then Kick off (4) and Restart (5)
+  if (b === 'UP') menuFocus = menuFocus >= 4 ? (menuFocus === 4 ? 2 : 3) : menuFocus - 2;
+  else if (b === 'DOWN') menuFocus = menuFocus < 2 ? menuFocus + 2 : (menuFocus < 4 ? 4 : menuFocus);
+  else if (b === 'LEFT') menuFocus -= 1;
+  else if (b === 'RIGHT') menuFocus += 1;
+  else if (b === 'A') { const el = items[Math.max(0, Math.min(items.length - 1, menuFocus))]; if (el) el.click(); return; }
+  else if (b === 'PAUSE' || b === 'B') { if (matchStarted) closeMenu(); return; }
+  else return;
+  refreshFocus();
+}
+menuOpts.forEach(function (el) { el.addEventListener('click', function () { setMode(el.dataset.mode, false); }); });
+startBtn.addEventListener('click', function () { closeMenu(); });
+restartBtn.addEventListener('click', function () { restart(); closeMenu(); });
+$('pauseBtn').addEventListener('click', function () { if (!menuOpen) openMenu(); });
+function openMenu() {
+  menuOpen = true;
+  menuEl.hidden = false;
+  touchCtl.hidden = true;
+  startBtn.textContent = matchStarted ? 'Resume' : 'Kick off';
+  restartBtn.hidden = !matchStarted;
+  drag = null;
+  clearInput();
+  endStick();
+  menuFocus = navItems().indexOf(startBtn);
+  refreshFocus();
+}
+function closeMenu() {
+  menuOpen = false;
+  menuEl.hidden = true;
+  touchCtl.hidden = controlMode !== 'buttons';
+  clearInput();
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  if (!matchStarted) { matchStarted = true; flash('KICK OFF', 'white'); }
+  hintTimer = 60 * 6;
+  labelState = '';
+}
+
+// ----- Direct-control actions -----
+function switchPlayer() {
+  const byDist = myTeam.slice().sort(function (a, b) { return Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y); });
+  controlled = byDist[0] === controlled ? byDist[1] : byDist[0];
+  ring(controlled.x, controlled.y, 26, '#ffe14d');
+}
+
+function directPass(kind) {
+  const c = ball.owner;
+  const mag = Math.hypot(stick.x, stick.y);
+  const dx = mag > 0.2 ? stick.x / mag : Math.cos(c.face), dy = mag > 0.2 ? stick.y / mag : Math.sin(c.face);
+  // Best teammate in the direction you're pushing, favouring closer ones
+  let best = null, bestS = -Infinity;
+  for (const m of myTeam) {
+    if (m === c) continue;
+    const mx = m.x - c.x, my = m.y - c.y, md = Math.hypot(mx, my);
+    if (md < 25) continue;
+    const al = (mx * dx + my * dy) / md;
+    if (al < 0.45) continue;
+    const sc = al * 1.2 - md / 500;
+    if (sc > bestS) { bestS = sc; best = m; }
+  }
+  let tx, ty;
+  if (best) {
+    const p = receivePoint(best);
+    if (kind === 'through') {
+      // Into the space ahead of the runner
+      const ddx = p.x - best.x, ddy = p.y - best.y, dd = Math.hypot(ddx, ddy) || 1;
+      tx = best.x + (ddx / dd) * 85; ty = best.y + (ddy / dd) * 85 - 10;
+    } else { tx = p.x; ty = p.y; }
+  } else { tx = c.x + dx * 120; ty = c.y + dy * 120; }
+  tx = clampX(tx); ty = clampY(ty);
+  const vx = tx - c.x, vy = ty - c.y, d = Math.max(1, Math.hypot(vx, vy));
+  const power = kind === 'lob' ? Math.max(4, Math.min(d / 36, 11))
+    : kind === 'through' ? Math.max(5, Math.min(d / 26, 15))
+    : Math.max(4, Math.min(d / 28, 14));
+  kick(c, (vx / d) * power, (vy / d) * power, 0);
+  if (kind === 'lob') { ball.vz = 3 + d / 110; ball.air = true; }
+  ball.cooldown = 12;
+  ball.passTarget = best;
+  ball.passPoint = best ? { x: tx, y: ty } : null;
+  if (best) controlled = best; // control moves to the receiver
+}
+
+function directShoot(charge) {
+  const c = ball.owner;
+  if (!c) return;
+  // Push left/right to pick a corner; overhitting (full bar) sprays it and can fly over the bar
+  const side = Math.abs(stick.x) > 0.2 ? Math.sign(stick.x) * Math.min(1, Math.abs(stick.x)) : 0;
+  const spread = 14 + (charge > 0.85 ? (charge - 0.85) * 260 : 0) + Math.hypot(c.vx, c.vy) * 4;
+  const tx = W / 2 + side * 52 + rand(-spread, spread), ty = -6;
+  const dx = tx - c.x, dy = ty - c.y, d = Math.hypot(dx, dy);
+  const power = 7 + charge * 9;
+  kick(c, (dx / d) * power, (dy / d) * power, 0);
+  ball.vz = 0.5 + charge * charge * 3.6;
+  ball.air = true;
+  ball.cooldown = 15;
+  if (charge > 0.6) shake = Math.max(shake, charge * 5);
+}
+
+function controlStep() {
+  const o = ball.owner;
+  if (o && o.team === 'you' && controlled !== o) controlled = o;
+  const c = controlled;
+  const pA = consume('A'), pB = consume('B'), pX = consume('X'), pY = consume('Y'), pSW = consume('SW');
+  const rB = consumeR('B');
+  ['A', 'X', 'Y', 'SW', 'SPRINT'].forEach(consumeR);
+  const mag = Math.min(1, Math.hypot(stick.x, stick.y));
+  const attacking = o && o.team === 'you';
+  if (mag > 0.12) hintTimer = Math.min(hintTimer, 90);
+
+  if (c.stun > 0) {
+    c.stun--; // stumbling after a missed tackle
+  } else if (c.lunge > 0) {
+    c.lunge--;
+    const t = (o && o.team === 'cpu') ? o : ball;
+    moveToward(c, t.x, t.y, 3.3);
+    if (c.lunge === 0 && ball.owner !== c) c.stun = 14;
+  } else {
+    let spd = held.SPRINT ? 2.7 : 1.9;
+    if (attacking) spd *= 0.93;
+    if (mag > 0.12) moveToward(c, c.x + (stick.x / mag) * 24, c.y + (stick.y / mag) * 24, spd * Math.max(0.45, mag));
+    else if (!attacking && held.A && o && o.team === 'cpu') moveToward(c, o.x, o.y, spd); // hold PRESS to chase the carrier
+    else if (!o && ball.passTarget === c) {
+      // Receiving a pass with the stick idle: run onto it automatically
+      if (Math.hypot(ball.x - c.x, ball.y - c.y) < 70) moveToward(c, ball.x, ball.y, 2.0);
+      else if (ball.passPoint) moveToward(c, ball.passPoint.x, ball.passPoint.y, SUPPORT_SPEED);
+    }
+  }
+
+  if (attacking) {
+    if (pA) { directPass('ground'); return; }
+    if (pY) { directPass('through'); return; }
+    if (pX) { directPass('lob'); return; }
+    if (pB) { charging = true; shotCharge = 0; }
+    if (charging) {
+      if (held.B) shotCharge = Math.min(1, shotCharge + 1 / 50);
+      if (rB || !held.B) { directShoot(Math.max(0.12, shotCharge)); charging = false; shotCharge = 0; }
+    }
+  } else {
+    charging = false; shotCharge = 0;
+    if (pSW || pX || pY) switchPlayer();
+    if (pB && !(c.stun > 0) && !(c.lunge > 0)) c.lunge = 10;
+  }
 }
 
 // ---------- Movement helpers ----------
@@ -397,9 +773,10 @@ function keeperStep(p) {
 // The deepest teammate (not the carrier) acts as keeper; stick with the current one unless another is clearly deeper
 let keeperRef = null;
 function pickKeeper(o) {
+  const skip = direct() ? controlled : null; // never make the player you're steering the keeper
   let deepest = null;
-  for (const p of myTeam) if (p !== o && (!deepest || p.y > deepest.y)) deepest = p;
-  if (!keeperRef || keeperRef === o || deepest.y > keeperRef.y + 40) keeperRef = deepest;
+  for (const p of myTeam) if (p !== o && p !== skip && (!deepest || p.y > deepest.y)) deepest = p;
+  if (!keeperRef || keeperRef === o || keeperRef === skip || deepest.y > keeperRef.y + 40) keeperRef = deepest;
   return keeperRef;
 }
 
@@ -407,8 +784,9 @@ function myTeamStep() {
   const o = ball.owner;
   const keeper = pickKeeper(o);
 
-  // Your carrier: drag to steer, otherwise they keep running on with the ball after receiving it
-  if (o && o.team === 'you') {
+  if (direct()) controlStep();
+  // Swipe mode carrier: drag to steer, otherwise they keep running on with the ball after receiving it
+  else if (o && o.team === 'you') {
     if (drag && drag.mode === 'dribble') {
       moveToward(o, drag.gx, drag.gy, DRIBBLE_SPEED);
       ball.autoRun = true;
@@ -426,6 +804,7 @@ function myTeamStep() {
 
   myTeam.forEach(function (p, i) {
     if (p === o) return;
+    if (direct() && p === controlled) return; // you're steering this one
     if (p === keeper && !(o && o.team === 'you')) { keeperStep(p); return; }
     if (o && o.team === 'you') {
       // Attack: make runs into space ahead of the carrier
@@ -470,9 +849,13 @@ function ballHeight() {
   if (ball.z <= 0) {
     ball.z = 0;
     if (ball.vz < -1.5) { ball.vz = -ball.vz * 0.45; puff(ball.x, ball.y, 4, 0, 0); }
-    else ball.vz = 0;
+    else { ball.vz = 0; ball.air = false; }
   }
 }
+
+// Lobs and shots really fly: outfield players can't reach a high ball, keepers can reach a bit higher
+const isKeeper = p => p === keeperRef || p === cpuTeam[0];
+const ballWorldHeight = () => BALL_VR + ball.z * 0.25;
 
 function gameStep() {
   if (celebrate > 0) { celebrationStep(); return; }
@@ -503,6 +886,12 @@ function gameStep() {
     // Goals: top is the computer's, bottom is yours
     const inGoal = ball.x > GOAL_X && ball.x < GOAL_X + GOAL_W;
     if (ball.y < ball.r) {
+      if (inGoal && ball.air && ballWorldHeight() > GOAL_H) {
+        // Over the bar: goal kick to the CPU keeper
+        flash('Over the bar!', 'red');
+        giveBall(cpuTeam[0]);
+        return;
+      }
       if (inGoal) { goalScored('you'); return; }
       ball.y = ball.r; ball.vy *= -0.8; if (speed > 2.5) puff(ball.x, ball.y, 4, 0, 0);
     }
@@ -516,6 +905,7 @@ function gameStep() {
       for (const p of allPlayers) {
         const d = Math.hypot(p.x - ball.x, p.y - ball.y);
         if (d < p.r + ball.r) {
+          if (ball.air && ball.z > (isKeeper(p) ? 14 : 8)) continue; // sails over their head
           // Faster balls are harder for the computer to catch, giving you room to score
           if (p.team === 'cpu' && speed > 9 && Math.random() < 0.6) continue;
           giveBall(p);
@@ -628,7 +1018,7 @@ function animStep() {
     p.run += 0.12 + sp * 0.3;
     let target;
     if (p === ball.owner && p.team === 'you') {
-      target = sp > 0.4 ? Math.atan2(p.vy, p.vx) : -Math.PI / 2;
+      target = sp > 0.4 ? Math.atan2(p.vy, p.vx) : (direct() ? p.face : -Math.PI / 2);
       if (drag && drag.mode === 'flick') {
         const v = dragVec();
         if (v.dist > 10) { const f = computeFlick(p, v.dx, v.dy); target = Math.atan2(f.aimY, f.aimX); }
@@ -1026,15 +1416,21 @@ const rollAxis = new THREE.Vector3();
 let lastBallW = null;
 
 // ----- Ground rings: carrier marker and pooled effect rings -----
-const carrierRing = new THREE.Group();
-const carrierMat = new THREE.MeshBasicMaterial({ color: '#ffe14d', transparent: true, opacity: 0.95, depthWrite: false });
-for (let i = 0; i < 8; i++) {
-  const seg = new THREE.Mesh(new THREE.RingGeometry(1.95, 2.3, 6, 1, i * TAU / 8, (TAU / 8) * 0.6), carrierMat);
-  seg.rotation.x = -Math.PI / 2;
-  carrierRing.add(seg);
+function makeDashRing(color) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false });
+  for (let i = 0; i < 8; i++) {
+    const seg = new THREE.Mesh(new THREE.RingGeometry(1.95, 2.3, 6, 1, i * TAU / 8, (TAU / 8) * 0.6), mat);
+    seg.rotation.x = -Math.PI / 2;
+    g.add(seg);
+  }
+  g.position.y = 0.04;
+  g.userData.mat = mat;
+  scene.add(g);
+  return g;
 }
-carrierRing.position.y = 0.04;
-scene.add(carrierRing);
+const youRing = makeDashRing('#ffe14d');  // the player you control (or your carrier in swipe mode)
+const cpuRing = makeDashRing('#ff5a5a');  // CPU player with the ball
 
 const ringPool = [];
 const ringGeo = new THREE.RingGeometry(0.82, 1, 40);
@@ -1302,19 +1698,48 @@ function drawHUD() {
   ctx.textBaseline = 'alphabetic';
 }
 
+// Yellow arrow over the player you control, plus the shot power bar while you hold SHOOT
+function drawControlMarker(x, y) {
+  const s = toScreen(x, y, 44);
+  if (!s.ok) return;
+  const bob = Math.sin(tick * 0.15) * 2;
+  ctx.save();
+  ctx.fillStyle = '#ffe14d';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(s.x, s.y + bob);
+  ctx.lineTo(s.x - 7, s.y - 10 + bob);
+  ctx.lineTo(s.x + 7, s.y - 10 + bob);
+  ctx.closePath();
+  ctx.stroke(); ctx.fill();
+  if (charging) {
+    const bw = 54, bh = 7, bx0 = s.x - bw / 2, by0 = s.y - 24;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    roundRect(bx0 - 2, by0 - 2, bw + 4, bh + 4, 4); ctx.fill();
+    ctx.fillStyle = 'hsl(' + Math.round(120 - 120 * shotCharge) + ',90%,55%)';
+    roundRect(bx0, by0, Math.max(3, bw * shotCharge), bh, 3); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillRect(bx0 + bw * 0.85, by0 - 2, 1.5, bh + 4); // past this mark the shot gets wild
+  }
+  ctx.restore();
+}
+
 function drawHint() {
-  if (hintTimer <= 0 || timeLeft <= 0) return;
+  if (hintTimer <= 0 || timeLeft <= 0 || menuOpen) return;
+  const lines = MODES[controlMode].hint;
+  const y0 = controlMode === 'buttons' ? 88 : H - 92; // with touch buttons, sit under the timer instead
   ctx.save();
   ctx.globalAlpha = Math.min(1, hintTimer / 30);
-  ctx.font = 'bold 13px sans-serif';
+  ctx.font = 'bold 12px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(6,18,10,0.75)';
-  roundRect(W / 2 - 145, H - 92, 290, 46, 12); ctx.fill();
+  ctx.fillStyle = 'rgba(6,18,10,0.78)';
+  roundRect(W / 2 - 165, y0, 330, 46, 12); ctx.fill();
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('Your receiver runs on - drag to steer', W / 2, H - 78);
+  ctx.fillText(lines[0], W / 2, y0 + 14);
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  ctx.fillText('Swipe anywhere else to pass or shoot', W / 2, H - 60);
+  ctx.fillText(lines[1], W / 2, y0 + 32);
   ctx.restore();
 }
 
@@ -1393,23 +1818,26 @@ function draw(a, dt) {
   lastBallW = { x: BX, z: BZ };
   ballMesh.position.set(BX, BALL_VR + bz * 0.25, BZ);
 
-  // Marker under whoever has the ball
+  // Ground markers: yellow under the player you control, red under the CPU carrier
   const owner = ball.owner;
   const oi = owner ? allPlayers.indexOf(owner) : -1;
-  carrierRing.visible = oi >= 0 && celebrate === 0;
-  if (carrierRing.visible) {
-    carrierRing.position.x = wx(pos2[oi].x);
-    carrierRing.position.z = wz(pos2[oi].y);
-    carrierRing.rotation.y = tick * 0.03;
-    if (owner.team === 'you') {
-      let danger = 0;
-      for (const c of cpuTeam) danger = Math.max(danger, 1 - Math.min(1, (Math.hypot(c.x - owner.x, c.y - owner.y) - 32) / 50));
-      carrierMat.color.setRGB(1, lerp(0.88, 0.35, danger), lerp(0.3, 0.27, danger));
-      carrierMat.opacity = 0.95;
-    } else {
-      carrierMat.color.set('#ff5a5a');
-      carrierMat.opacity = 0.5 + 0.4 * Math.sin(tick * 0.3);
-    }
+  const mine = direct() ? controlled : (owner && owner.team === 'you' ? owner : null);
+  const mi = mine ? allPlayers.indexOf(mine) : -1;
+  youRing.visible = mi >= 0 && celebrate === 0;
+  if (youRing.visible) {
+    youRing.position.x = wx(pos2[mi].x);
+    youRing.position.z = wz(pos2[mi].y);
+    youRing.rotation.y = tick * 0.03;
+    let danger = 0;
+    if (mine === owner) for (const c of cpuTeam) danger = Math.max(danger, 1 - Math.min(1, (Math.hypot(c.x - mine.x, c.y - mine.y) - 32) / 50));
+    youRing.userData.mat.color.setRGB(1, lerp(0.88, 0.35, danger), lerp(0.3, 0.27, danger));
+  }
+  cpuRing.visible = oi >= 0 && owner.team === 'cpu' && celebrate === 0;
+  if (cpuRing.visible) {
+    cpuRing.position.x = wx(pos2[oi].x);
+    cpuRing.position.z = wz(pos2[oi].y);
+    cpuRing.rotation.y = -tick * 0.03;
+    cpuRing.userData.mat.opacity = 0.5 + 0.4 * Math.sin(tick * 0.3);
   }
   updateRings();
   goals.forEach(updateNet);
@@ -1420,10 +1848,11 @@ function draw(a, dt) {
   ctx.clearRect(0, 0, W, H);
   drawTrail();
   drawParticles();
-  if (drag && oi >= 0 && owner.team === 'you' && celebrate === 0 && timeLeft > 0) {
+  if (controlMode === 'swipe' && drag && oi >= 0 && owner.team === 'you' && celebrate === 0 && timeLeft > 0) {
     if (drag.mode === 'flick') drawAim(owner, pos2[oi].x, pos2[oi].y, bx, by);
     else drawDribbleTarget(pos2[oi].x, pos2[oi].y);
   }
+  if (direct() && mi >= 0 && celebrate === 0 && timeLeft > 0) drawControlMarker(pos2[mi].x, pos2[mi].y);
   if (flashAlpha > 0.01) {
     ctx.globalAlpha = flashAlpha;
     ctx.fillStyle = flashColor;
@@ -1441,13 +1870,25 @@ let last = performance.now(), acc = 0;
 function loop(now) {
   const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
   last = now;
-  acc += dt * (slowMo > 0 ? 0.35 : 1);
-  let n = 0;
-  while (acc >= STEP && n < 8) { step(); acc -= STEP; n++; }
-  if (n === 8) acc = 0;
+  pollInput();
+  if (menuOpen) {
+    acc = 0; // the match is paused while the menu is up
+    $('padStatus').textContent = padName ? 'Controller connected: ' + padName.slice(0, 40) : (controlMode === 'gamepad' ? 'No controller found yet - plug one in and press any button' : '');
+  } else {
+    acc += dt * (slowMo > 0 ? 0.35 : 1);
+    let n = 0;
+    while (acc >= STEP && n < 8) { step(); acc -= STEP; n++; }
+    if (n === 8) acc = 0;
+    if (controlMode === 'buttons') updateButtonLabels();
+  }
   draw(Math.min(1, acc / STEP), dt);
   requestAnimationFrame(loop);
 }
-flash('KICK OFF', 'white');
+
+// Start on the controls menu, with the best guess for this device already picked
+window.addEventListener('gamepadconnected', function (e) { toast('Controller connected'); if (menuOpen) setMode('gamepad', false); });
+window.addEventListener('gamepaddisconnected', function () { if (controlMode === 'gamepad') setMode(isTouchDevice ? 'buttons' : 'keyboard', true); });
+setMode(controlMode, false);
+openMenu();
 updateCamera(ball.x, ball.y, 1);
 requestAnimationFrame(loop);
