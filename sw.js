@@ -1,5 +1,5 @@
-const CACHE = 'flickmatch-v2';
-const FILES = ['./', 'index.html', 'game.js', 'manifest.json'];
+const CACHE = 'flickmatch-v3';
+const FILES = ['./', 'index.html', 'game.js', 'manifest.json', 'lib/three.module.min.js'];
 
 self.addEventListener('install', function (e) {
   self.skipWaiting();
