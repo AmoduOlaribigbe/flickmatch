@@ -61,12 +61,19 @@ function makePlayer(x, y, i, team, extra) {
 const HOME_YOU = [[200, 560], [90, 470], [310, 470], [200, 380]];
 const myTeam = HOME_YOU.map((h, i) => makePlayer(h[0], h[1], i, 'you'));
 const cpuTeam = [
-  makePlayer(200, 140, 2, 'cpu', { homeX: 200 }),
-  makePlayer(110, 230, 3, 'cpu', { homeX: 110 }),
-  makePlayer(290, 230, 0, 'cpu', { homeX: 290 }),
-  makePlayer(200, 310, 1, 'cpu', { homeX: 200 })
+  makePlayer(200, 140, 2, 'cpu', { homeX: 200, homeY: 140 }),
+  makePlayer(110, 230, 3, 'cpu', { homeX: 110, homeY: 230 }),
+  makePlayer(290, 230, 0, 'cpu', { homeX: 290, homeY: 230 }),
+  makePlayer(200, 310, 1, 'cpu', { homeX: 200, homeY: 310 })
 ];
 const allPlayers = myTeam.concat(cpuTeam);
+
+const DRIBBLE_SPEED = 2.1;   // your carrier when you drag them
+const SUPPORT_SPEED = 1.7;   // teammates making runs
+const PRESS_SPEED_YOU = 1.5; // your player chasing the CPU carrier
+const PRESS_SPEED_CPU = 1.2; // CPU player chasing your carrier
+const PROTECT_STEPS = 30;    // no tackles for half a second after getting the ball
+let hintTimer = 60 * 8;
 
 function giveBall(p) {
   ball.owner = p;
@@ -74,12 +81,14 @@ function giveBall(p) {
   ball.vy = 0;
   ball.x = p.x;
   ball.y = p.y;
+  ball.protect = PROTECT_STEPS;
+  ball.passTarget = null;
 }
 giveBall(myTeam[0]);
 
 function reset(scoredByYou) {
   HOME_YOU.forEach((h, i) => { myTeam[i].x = h[0]; myTeam[i].y = h[1]; });
-  cpuTeam.forEach(p => { p.x = p.homeX; });
+  cpuTeam.forEach(p => { p.x = p.homeX; p.y = p.homeY; });
   giveBall(scoredByYou ? myTeam[0] : myTeam[0]);
   ball.z = 0; ball.vz = 0; ball.trail.length = 0;
   // No interpolation streaks after teleporting everyone
@@ -216,7 +225,10 @@ function down(e) {
     return;
   }
   const p = pos(e);
-  drag = { sx: p.x, sy: p.y, cx: p.x, cy: p.y, t: performance.now() };
+  // Touching your ball carrier starts a dribble; touching anywhere else starts a flick
+  const o = ball.owner;
+  const mode = (o && o.team === 'you' && Math.hypot(p.x - o.x, p.y - o.y) < 48) ? 'dribble' : 'flick';
+  drag = { mode, sx: p.x, sy: p.y, cx: p.x, cy: p.y, t: performance.now() };
 }
 function move(e) {
   if (!drag) return;
@@ -231,11 +243,14 @@ function up(e) {
   const dx = drag.cx - drag.sx;
   const dy = drag.cy - drag.sy;
   const dist = Math.hypot(dx, dy);
+  const mode = drag.mode;
   drag = null;
+  if (mode === 'dribble') return; // letting go just stops the run
   if (dist < 20 || !ball.owner || ball.owner.team === 'cpu' || celebrate > 0 || timeLeft <= 0) return;
   const f = computeFlick(ball.owner, dx, dy);
   kick(ball.owner, f.aimX * f.power, f.aimY * f.power, f.power);
   ball.cooldown = 12;
+  ball.passTarget = f.target;
 }
 
 canvas.addEventListener('mousedown', down);
@@ -251,7 +266,126 @@ function restart() {
   endFade = 0;
   particles.length = 0;
   reset(true);
+  hintTimer = 60 * 5;
   flash('KICK OFF', 'white');
+}
+
+// ---------- Movement helpers ----------
+const clampX = x => Math.max(16, Math.min(W - 16, x));
+const clampY = y => Math.max(NET_D + 16, Math.min(H - NET_D - 16, y));
+
+function moveToward(p, tx, ty, speed) {
+  const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy);
+  if (d < 1.5) return;
+  const s = Math.min(speed, d * 0.2 + 0.3); // ease in to the spot instead of jittering
+  p.x = clampX(p.x + (dx / d) * s);
+  p.y = clampY(p.y + (dy / d) * s);
+}
+
+function nearest(team, x, y, skip) {
+  let best = null, bd = Infinity;
+  for (const p of team) {
+    if (p === skip) continue;
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+
+// Where teammate i should run to support the carrier, nudged away from defenders to get open
+function supportSpot(i, c, cover) {
+  const p = myTeam[i];
+  const sway = Math.sin(tick * 0.02 + p.seed * 3) * 22;
+  let x, y;
+  if (p === cover)  { x = 200 + sway * 0.5; y = Math.max(c.y + 140, 520); } // keeper stays back as cover
+  else if (i === 3) { x = 200 + sway * 1.5; y = c.y - 170; } // striker runs in behind
+  else if (i === 1) { x = 75 + sway * 0.5;  y = c.y - 95; }  // left wing
+  else if (i === 2) { x = 325 + sway * 0.5; y = c.y - 95; }  // right wing
+  else              { x = 200 + sway * 0.5; y = c.y - 60; }  // back player joins the attack
+  y = Math.max(70, Math.min(620, y));
+  for (const d of cpuTeam) {
+    const dx = x - d.x, dy = y - d.y, dd = Math.hypot(dx, dy);
+    if (dd < 75 && dd > 0.01) { x += (dx / dd) * (75 - dd) * 0.9; y += (dy / dd) * (75 - dd) * 0.5; }
+  }
+  return { x: clampX(x), y: clampY(y) };
+}
+
+// Your back player guards the goal: tracks the ball and moves to where a shot will cross
+function keeperStep(p) {
+  const GK_Y = 612;
+  let tx = ball.x;
+  if (!ball.owner && ball.vy > 1) {
+    const t = (GK_Y - ball.y) / ball.vy;
+    if (t > 0) tx = ball.x + ball.vx * t;
+  }
+  tx = Math.max(GOAL_X - 8, Math.min(GOAL_X + GOAL_W + 8, lerp(W / 2, tx, 0.85)));
+  const o = ball.owner;
+  const d = Math.hypot(ball.x - p.x, ball.y - p.y);
+  if (!o && d < 80) moveToward(p, ball.x, ball.y, 2.2);              // come out to claim a loose ball
+  else if (o && o.team === 'cpu' && o.y > 540 && d < 60) moveToward(p, o.x, o.y, 1.6); // smother a striker who gets right in close
+  else moveToward(p, tx, GK_Y, 2.2);
+}
+
+// The deepest teammate (not the carrier) acts as keeper; stick with the current one unless another is clearly deeper
+let keeperRef = null;
+function pickKeeper(o) {
+  let deepest = null;
+  for (const p of myTeam) if (p !== o && (!deepest || p.y > deepest.y)) deepest = p;
+  if (!keeperRef || keeperRef === o || deepest.y > keeperRef.y + 40) keeperRef = deepest;
+  return keeperRef;
+}
+
+function myTeamStep() {
+  const o = ball.owner;
+  const keeper = pickKeeper(o);
+
+  // You control the carrier by dragging them
+  if (o && o.team === 'you' && drag && drag.mode === 'dribble') {
+    moveToward(o, drag.cx, drag.cy, DRIBBLE_SPEED);
+    hintTimer = Math.min(hintTimer, 60);
+  }
+
+  const outfield = myTeam.filter(p => p !== keeper);
+  const presser = (o && o.team === 'cpu') ? nearest(outfield, o.x, o.y) : null;
+  const chaser = !o ? nearest(outfield, ball.x, ball.y, ball.cooldown > 0 ? ball.lastKicker : null) : null;
+  // When you attack, the keeper hangs back as cover
+  const cover = (o && o.team === 'you') ? keeper : null;
+
+  myTeam.forEach(function (p, i) {
+    if (p === o) return;
+    if (p === keeper && !(o && o.team === 'you')) { keeperStep(p); return; }
+    if (o && o.team === 'you') {
+      // Attack: make runs into space ahead of the carrier
+      const s = supportSpot(i, o, cover);
+      moveToward(p, s.x, s.y, p === cover ? 2.2 : SUPPORT_SPEED);
+    } else if (!o) {
+      if (ball.passTarget === p) {
+        // Receiver waits for the pass, then steps in to meet it
+        if (Math.hypot(ball.x - p.x, ball.y - p.y) < 90) moveToward(p, ball.x, ball.y, 1.8);
+      } else if (p === chaser) {
+        moveToward(p, ball.x, ball.y, 1.8);
+      } else {
+        moveToward(p, lerp(HOME_YOU[i][0], ball.x, 0.3), HOME_YOU[i][1], 1.2);
+      }
+    } else {
+      // Defend: nearest player presses the carrier, the rest drop back into shape
+      if (p === presser) moveToward(p, o.x, o.y, PRESS_SPEED_YOU);
+      else moveToward(p, lerp(HOME_YOU[i][0], o.x, 0.3), HOME_YOU[i][1], 1.3);
+    }
+  });
+
+  // Keep teammates from stacking on top of each other
+  for (let i = 0; i < myTeam.length; i++) {
+    for (let j = i + 1; j < myTeam.length; j++) {
+      const a = myTeam[i], b = myTeam[j];
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+      if (d < 34 && d > 0.01) {
+        const push = (34 - d) * 0.25;
+        if (a !== o) { a.x = clampX(a.x - (dx / d) * push); a.y = clampY(a.y - (dy / d) * push); }
+        if (b !== o) { b.x = clampX(b.x + (dx / d) * push); b.y = clampY(b.y + (dy / d) * push); }
+      }
+    }
+  }
 }
 
 // ---------- Simulation ----------
@@ -268,6 +402,8 @@ function ballHeight() {
 
 function gameStep() {
   if (celebrate > 0) { celebrationStep(); return; }
+  if (ball.protect > 0) ball.protect--;
+  myTeamStep();
 
   if (ball.owner) {
     // Ball sits at the carrier's feet, on the side they are facing
@@ -319,18 +455,47 @@ function gameStep() {
   }
 
   // Simple computer AI
+  const youHave = ball.owner && ball.owner.team === 'you';
+  const cpuPresser = youHave ? nearest(cpuTeam, ball.owner.x, ball.owner.y) : null;
+  // In the CPU's half a second defender also closes in
+  const cpuPresser2 = (youHave && ball.owner.y < 380) ? nearest(cpuTeam, ball.owner.x, ball.owner.y, cpuPresser) : null;
   cpuTeam.forEach(function (p) {
-    if (ball.owner === p) {
+    if (youHave) {
+      // Defenders close down your carrier, the rest hold their shape and shade toward the ball
+      if (p === cpuPresser) moveToward(p, ball.owner.x, ball.owner.y, PRESS_SPEED_CPU);
+      else if (p === cpuPresser2) moveToward(p, ball.owner.x, ball.owner.y - 30, 0.9);
+      else moveToward(p, lerp(p.homeX, ball.owner.x, 0.25), p.homeY, 1.0);
+    } else if (ball.owner && ball.owner !== p) {
+      // A teammate has the ball: push forward ahead of them (the deepest player stays back)
+      const sway = Math.sin(tick * 0.02 + p.seed * 3) * 25;
+      if (p.homeY <= 140) moveToward(p, p.homeX, p.homeY, 1.0);
+      else moveToward(p, p.homeX + sway, Math.min(540, ball.owner.y + 90), 1.1);
+    } else if (ball.owner === p) {
+      const threat = nearest(myTeam, p.x, p.y);
+      const pressed = Math.hypot(threat.x - p.x, threat.y - p.y) < 45;
+      if (pressed && !(ball.protect > 0)) {
+        // Under pressure: pass to the most open teammate further forward, or shoot if close enough
+        let mate = null, best = -Infinity;
+        for (const m of cpuTeam) {
+          if (m === p || m.y < p.y - 10) continue;
+          const mark = nearest(myTeam, m.x, m.y);
+          const open = Math.hypot(mark.x - m.x, mark.y - m.y);
+          const sc = open + (m.y - p.y) * 0.3;
+          if (open > 40 && sc > best) { best = sc; mate = m; }
+        }
+        if (mate) {
+          const dx = mate.x - p.x, dy = mate.y - p.y, d = Math.hypot(dx, dy);
+          const power = Math.max(4, Math.min(d / 28, 14));
+          kick(p, (dx / d) * power, (dy / d) * power, power);
+          ball.cooldown = 12;
+          return;
+        }
+        if (p.y > 430) { cpuShoot(p); return; }
+      }
       // Dribble toward your goal, then shoot
       p.y += 1.3;
       p.x += (W / 2 - p.x) * 0.01;
-      if (p.y > 470) {
-        const tx = GOAL_X + Math.random() * GOAL_W;
-        const dx = tx - p.x, dy = H - p.y;
-        const d = Math.hypot(dx, dy);
-        kick(p, (dx / d) * 9, (dy / d) * 9, 9);
-        ball.cooldown = 15;
-      }
+      if (p.y > 470 && !(ball.protect > 0)) cpuShoot(p);
     } else {
       // Chase the loose ball a little, otherwise hold position
       const targetX = !ball.owner ? ball.x : p.homeX;
@@ -340,19 +505,30 @@ function gameStep() {
     p.x = Math.max(p.r, Math.min(W - p.r, p.x));
   });
 
-  // Computer steals if it touches your carrier closely
-  if (ball.owner && ball.owner.team === 'you') {
-    for (const c of cpuTeam) {
-      if (Math.hypot(c.x - ball.owner.x, c.y - ball.owner.y) < c.r + ball.owner.r - 2) {
-        sparks(ball.owner.x, ball.owner.y);
+  // Tackles: touching the opposing carrier wins the ball (not right after they got it)
+  if (ball.owner && !(ball.protect > 0)) {
+    const o = ball.owner;
+    const rivals = o.team === 'you' ? cpuTeam : myTeam;
+    for (const c of rivals) {
+      if (Math.hypot(c.x - o.x, c.y - o.y) < c.r + o.r - 2) {
+        sparks(o.x, o.y);
         giveBall(c);
         c.catchFx = 1;
         shake = Math.max(shake, 4);
-        flash('Lost it!', 'red');
+        if (o.team === 'you') flash('Lost it!', 'red');
+        else flash('Won it!', 'white');
         break;
       }
     }
   }
+}
+
+function cpuShoot(p) {
+  const tx = GOAL_X + Math.random() * GOAL_W;
+  const dx = tx - p.x, dy = H - p.y;
+  const d = Math.hypot(dx, dy);
+  kick(p, (dx / d) * 9, (dy / d) * 9, 9);
+  ball.cooldown = 15;
 }
 
 function celebrationStep() {
@@ -366,7 +542,7 @@ function celebrationStep() {
   // Everyone jogs back to their kickoff spots
   if (celebrate < 55) {
     HOME_YOU.forEach((h, i) => { const p = myTeam[i]; p.x = lerp(p.x, h[0], 0.08); p.y = lerp(p.y, h[1], 0.08); });
-    cpuTeam.forEach(p => { p.x = lerp(p.x, p.homeX, 0.08); });
+    cpuTeam.forEach(p => { p.x = lerp(p.x, p.homeX, 0.08); p.y = lerp(p.y, p.homeY, 0.08); });
   }
   if (celebrate === 0) reset(lastScorer === 'you');
 }
@@ -379,8 +555,8 @@ function animStep() {
     p.run += 0.12 + sp * 0.3;
     let target;
     if (p === ball.owner && p.team === 'you') {
-      target = -Math.PI / 2;
-      if (drag) {
+      target = sp > 0.4 ? Math.atan2(p.vy, p.vx) : -Math.PI / 2;
+      if (drag && drag.mode === 'flick') {
         const dx = drag.cx - drag.sx, dy = drag.cy - drag.sy;
         if (Math.hypot(dx, dy) > 10) { const f = computeFlick(p, dx, dy); target = Math.atan2(f.aimY, f.aimX); }
       }
@@ -415,6 +591,7 @@ function fxStep() {
   scorePop.you *= 0.9; scorePop.cpu *= 0.9;
   if (messageTimer > 0) messageTimer--;
   if (slowMo > 0) slowMo--;
+  if (hintTimer > 0 && celebrate === 0) hintTimer--;
   if (timeLeft <= 0 && celebrate === 0) {
     endFade = Math.min(1, endFade + 0.03);
     if (score.you > score.cpu && tick % 5 === 0) confetti(0, W, -5, 1, 3, ['#ffe14d', '#2563eb', '#ffffff', '#60a5fa']);
@@ -888,7 +1065,10 @@ function draw(a) {
   drawGoal(true);
   drawGoal(false);
 
-  if (drag && ownerPos && owner.team === 'you' && celebrate === 0 && timeLeft > 0) drawAim(owner, ownerPos.x, ownerPos.y, bx, by);
+  if (drag && ownerPos && owner.team === 'you' && celebrate === 0 && timeLeft > 0) {
+    if (drag.mode === 'flick') drawAim(owner, ownerPos.x, ownerPos.y, bx, by);
+    else drawDribbleTarget(ownerPos.x, ownerPos.y);
+  }
   drawParticles(true);
   ctx.restore();
 
@@ -899,8 +1079,39 @@ function draw(a) {
     ctx.globalAlpha = 1;
   }
   drawHUD();
+  drawHint();
   drawMessage();
   drawEndScreen();
+}
+
+function drawDribbleTarget(ox, oy) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 6]);
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(drag.cx, drag.cy); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(255,225,77,0.85)';
+  ctx.lineWidth = 2.5;
+  circle(drag.cx, drag.cy, 10 + Math.sin(tick * 0.3) * 2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawHint() {
+  if (hintTimer <= 0 || timeLeft <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, hintTimer / 30);
+  ctx.font = 'bold 13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lines = ['Hold your player & drag to run', 'Swipe anywhere else to pass or shoot'];
+  ctx.fillStyle = 'rgba(6,18,10,0.75)';
+  roundRect(W / 2 - 135, H - 92, 270, 46, 12); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(lines[0], W / 2, H - 78);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fillText(lines[1], W / 2, H - 60);
+  ctx.restore();
 }
 
 // ---------- Loop ----------
