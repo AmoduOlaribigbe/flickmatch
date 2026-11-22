@@ -20,7 +20,7 @@
 
   #touchCtl { position: absolute; inset: 0; }
   #touchCtl[hidden] { display: none; }
-  #stickZone { pointer-events: auto; position: absolute; left: 0; bottom: 0; width: 52%; height: 46%; touch-action: none; }
+  #stickZone { pointer-events: auto; position: absolute; left: 0; bottom: 0; width: 45%; height: 62%; touch-action: none; }
   #stickBase { position: absolute; left: 80px; top: calc(100% - 95px); width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%;
     background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.35); }
   #stickKnob { position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%;
@@ -56,6 +56,9 @@
   #toast { position: absolute; left: 50%; top: 92px; transform: translateX(-50%); background: rgba(6,18,10,.88); color: #fff; padding: 6px 12px;
     border-radius: 20px; font-size: 12px; font-weight: 700; opacity: 0; transition: opacity .3s; white-space: nowrap; }
   #toast.show { opacity: 1; }
+  #rotateTip { position: absolute; left: 50%; top: 128px; transform: translateX(-50%); background: rgba(6,18,10,.88); color: #ffe14d; padding: 7px 14px;
+    border-radius: 20px; font-size: 12px; font-weight: 800; white-space: nowrap; }
+  #rotateTip[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -75,6 +78,7 @@
       </div>
     </div>
     <div id="toast"></div>
+    <div id="rotateTip" hidden>&#x21bb; Turn your phone sideways for the full view</div>
     <div id="menu">
       <div class="panel">
         <h1>Flick Match</h1>

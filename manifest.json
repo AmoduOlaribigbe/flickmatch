@@ -3,7 +3,7 @@
   "short_name": "FlickMatch",
   "start_url": "index.html",
   "display": "fullscreen",
-  "orientation": "portrait",
+  "orientation": "landscape",
   "background_color": "#0b1424",
   "theme_color": "#0f1d33",
   "icons": []

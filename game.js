@@ -8,7 +8,9 @@ const ctx = overlay.getContext('2d');
 const view3d = document.getElementById('view3d');
 const stage = document.getElementById('stage');
 
-const W = 400, H = 700, TAU = Math.PI * 2;
+const W = 520, H = 910, TAU = Math.PI * 2; // pitch size (30% bigger than the original 400 x 700)
+const FX = W / 400, FY = H / 700;            // scale for positions tuned on the original pitch
+let VW = 780, VH = 430;                      // virtual screen size for the 2D overlay, set in fit()
 const STEP = 1 / 60; // fixed simulation step, same speed on 60Hz and 120Hz screens
 const S = 0.1;       // pitch units -> 3D world units
 const BALL_VR = 0.46; // visual ball radius in world units
@@ -67,13 +69,13 @@ function makePlayer(x, y, i, team, extra) {
   }, extra);
 }
 
-const HOME_YOU = [[200, 560], [90, 470], [310, 470], [200, 380]];
+const HOME_YOU = [[200, 560], [90, 470], [310, 470], [200, 380]].map(h => [h[0] * FX, h[1] * FY]);
 const myTeam = HOME_YOU.map((h, i) => makePlayer(h[0], h[1], i, 'you', { num: [1, 4, 7, 9][i] }));
 const cpuTeam = [
-  makePlayer(200, 140, 2, 'cpu', { homeX: 200, homeY: 140, num: 1 }),
-  makePlayer(110, 230, 3, 'cpu', { homeX: 110, homeY: 230, num: 5 }),
-  makePlayer(290, 230, 0, 'cpu', { homeX: 290, homeY: 230, num: 8 }),
-  makePlayer(200, 310, 1, 'cpu', { homeX: 200, homeY: 310, num: 10 })
+  makePlayer(200 * FX, 140 * FY, 2, 'cpu', { homeX: 200 * FX, homeY: 140 * FY, num: 1 }),
+  makePlayer(110 * FX, 230 * FY, 3, 'cpu', { homeX: 110 * FX, homeY: 230 * FY, num: 5 }),
+  makePlayer(290 * FX, 230 * FY, 0, 'cpu', { homeX: 290 * FX, homeY: 230 * FY, num: 8 }),
+  makePlayer(200 * FX, 310 * FY, 1, 'cpu', { homeX: 200 * FX, homeY: 310 * FY, num: 10 })
 ];
 const allPlayers = myTeam.concat(cpuTeam);
 
@@ -281,8 +283,8 @@ function pos(e) {
   const rect = overlay.getBoundingClientRect();
   const t = e.touches ? e.touches[0] : e;
   return {
-    x: (t.clientX - rect.left) * (W / rect.width),
-    y: (t.clientY - rect.top) * (H / rect.height)
+    x: (t.clientX - rect.left) * (VW / rect.width),
+    y: (t.clientY - rect.top) * (VH / rect.height)
   };
 }
 
@@ -505,7 +507,8 @@ function pollInput() {
   let x = kx + pad.x + tstick.x, y = ky + pad.y + tstick.y;
   const m = Math.hypot(x, y);
   if (m > 1) { x /= m; y /= m; }
-  stick.x = x; stick.y = y;
+  const pd = screenToPitchDir(x, y);
+  stick.x = pd.x; stick.y = pd.y;
   for (const b of BTNS) held[b] = !!(kbHeld[b] || padHeld[b] || touchHeld[b]);
   if (latchP.PAUSE) { latchP.PAUSE = false; if (!menuOpen) openMenu(); }
   // A press restarts after full time
@@ -616,7 +619,7 @@ function directPass(kind) {
     if (kind === 'through') {
       // Into the space ahead of the runner
       const ddx = p.x - best.x, ddy = p.y - best.y, dd = Math.hypot(ddx, ddy) || 1;
-      tx = best.x + (ddx / dd) * 85; ty = best.y + (ddy / dd) * 85 - 10;
+      tx = best.x + (ddx / dd) * 100; ty = best.y + (ddy / dd) * 100 - 10;
     } else { tx = p.x; ty = p.y; }
   } else { tx = c.x + dx * 120; ty = c.y + dy * 120; }
   tx = clampX(tx); ty = clampY(ty);
@@ -721,12 +724,12 @@ function supportSpot(i, c, cover) {
   const p = myTeam[i];
   const sway = Math.sin(tick * 0.02 + p.seed * 3) * 22;
   let x, y;
-  if (p === cover)  { x = 200 + sway * 0.5; y = Math.max(c.y + 140, 520); } // keeper stays back as cover
-  else if (i === 3) { x = 200 + sway * 1.5; y = c.y - 170; } // striker runs in behind
-  else if (i === 1) { x = 75 + sway * 0.5;  y = c.y - 95; }  // left wing
-  else if (i === 2) { x = 325 + sway * 0.5; y = c.y - 95; }  // right wing
-  else              { x = 200 + sway * 0.5; y = c.y - 60; }  // back player joins the attack
-  y = Math.max(70, Math.min(620, y));
+  if (p === cover)  { x = W / 2 + sway * 0.5; y = Math.max(c.y + 140 * FY, 520 * FY); } // keeper stays back as cover
+  else if (i === 3) { x = W / 2 + sway * 1.5; y = c.y - 170 * FY; } // striker runs in behind
+  else if (i === 1) { x = 75 * FX + sway * 0.5;  y = c.y - 95 * FY; }  // left wing
+  else if (i === 2) { x = 325 * FX + sway * 0.5; y = c.y - 95 * FY; }  // right wing
+  else              { x = W / 2 + sway * 0.5; y = c.y - 60 * FY; }  // back player joins the attack
+  y = Math.max(70, Math.min(H - 80 * FY, y));
   for (const d of cpuTeam) {
     const dx = x - d.x, dy = y - d.y, dd = Math.hypot(dx, dy);
     if (dd < 75 && dd > 0.01) { x += (dx / dd) * (75 - dd) * 0.9; y += (dy / dd) * (75 - dd) * 0.5; }
@@ -739,7 +742,7 @@ function autoRun(o) {
   let dx = 0, dy = -1;
   const sp = Math.hypot(o.vx, o.vy);
   if (sp > 0.3) { dx += (o.vx / sp) * 0.6; dy += (o.vy / sp) * 0.6; }
-  dx += ((W / 2 - o.x) / 200) * 0.5;
+  dx += ((W / 2 - o.x) / (W / 2)) * 0.5;
   for (const c of cpuTeam) {
     const ax = o.x - c.x, ay = o.y - c.y, d = Math.hypot(ax, ay);
     if (d < 85 && d > 0.01 && c.y < o.y + 10) {
@@ -756,7 +759,7 @@ function autoRun(o) {
 
 // Your back player guards the goal: tracks the ball and moves to where a shot will cross
 function keeperStep(p) {
-  const GK_Y = 612;
+  const GK_Y = H - 88;
   let tx = ball.x;
   if (!ball.owner && ball.vy > 1) {
     const t = (GK_Y - ball.y) / ball.vy;
@@ -766,7 +769,7 @@ function keeperStep(p) {
   const o = ball.owner;
   const d = Math.hypot(ball.x - p.x, ball.y - p.y);
   if (!o && d < 80) moveToward(p, ball.x, ball.y, 2.2);              // come out to claim a loose ball
-  else if (o && o.team === 'cpu' && o.y > 540 && d < 60) moveToward(p, o.x, o.y, 1.6); // smother a striker who gets right in close
+  else if (o && o.team === 'cpu' && o.y > H - 160 && d < 60) moveToward(p, o.x, o.y, 1.6); // smother a striker who gets right in close
   else moveToward(p, tx, GK_Y, 2.2);
 }
 
@@ -921,7 +924,7 @@ function gameStep() {
   const youHave = ball.owner && ball.owner.team === 'you';
   const cpuPresser = youHave ? nearest(cpuTeam, ball.owner.x, ball.owner.y) : null;
   // In the CPU's half a second defender also closes in
-  const cpuPresser2 = (youHave && ball.owner.y < 380) ? nearest(cpuTeam, ball.owner.x, ball.owner.y, cpuPresser) : null;
+  const cpuPresser2 = (youHave && ball.owner.y < H * 0.54) ? nearest(cpuTeam, ball.owner.x, ball.owner.y, cpuPresser) : null;
   cpuTeam.forEach(function (p) {
     if (youHave) {
       // Defenders close down your carrier, the rest hold their shape and shade toward the ball
@@ -931,8 +934,8 @@ function gameStep() {
     } else if (ball.owner && ball.owner !== p) {
       // A teammate has the ball: push forward ahead of them (the deepest player stays back)
       const sway = Math.sin(tick * 0.02 + p.seed * 3) * 25;
-      if (p.homeY <= 140) moveToward(p, p.homeX, p.homeY, 1.0);
-      else moveToward(p, p.homeX + sway, Math.min(540, ball.owner.y + 90), 1.1);
+      if (p === cpuTeam[0]) moveToward(p, p.homeX, p.homeY, 1.0);
+      else moveToward(p, p.homeX + sway, Math.min(540 * FY, ball.owner.y + 90 * FY), 1.1);
     } else if (ball.owner === p) {
       const threat = nearest(myTeam, p.x, p.y);
       const pressed = Math.hypot(threat.x - p.x, threat.y - p.y) < 45;
@@ -953,12 +956,12 @@ function gameStep() {
           ball.cooldown = 12;
           return;
         }
-        if (p.y > 430) { cpuShoot(p); return; }
+        if (p.y > H - 270) { cpuShoot(p); return; }
       }
       // Dribble toward your goal, then shoot
       p.y += 1.3;
       p.x += (W / 2 - p.x) * 0.01;
-      if (p.y > 470 && !(ball.protect > 0)) cpuShoot(p);
+      if (p.y > H - 230 && !(ball.protect > 0)) cpuShoot(p);
     } else {
       // Chase the loose ball a little, otherwise hold position
       const targetX = !ball.owner ? ball.x : p.homeX;
@@ -1100,15 +1103,15 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 const SKY = '#0f1d33';
 scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 80, 170);
-const camera = new THREE.PerspectiveCamera(52, W / H, 0.5, 300);
+scene.fog = new THREE.Fog(SKY, 110, 230);
+const camera = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 400);
 
 scene.add(new THREE.HemisphereLight('#dfe9ff', '#2d4a22', 1.15));
 const sun = new THREE.DirectionalLight('#fff4e0', 2.3);
 sun.position.set(18, 48, 24);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -34, right: 34, top: 48, bottom: -48, near: 5, far: 130 });
+Object.assign(sun.shadow.camera, { left: -W * S / 2 - 8, right: W * S / 2 + 8, top: H * S / 2 + 8, bottom: -H * S / 2 - 8, near: 5, far: 160 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
 scene.add(sun);
@@ -1131,9 +1134,10 @@ function makePitchCanvas() {
   c.width = Math.round(W * k); c.height = Math.round(H * k);
   const g = c.getContext('2d');
   g.setTransform(k, 0, 0, k, 0, 0);
-  for (let i = 0; i < 14; i++) { g.fillStyle = i % 2 ? '#2a8a3e' : '#319a47'; g.fillRect(0, i * 50, W, 50); }
+  const bands = 14, bh = H / bands;
+  for (let i = 0; i < bands; i++) { g.fillStyle = i % 2 ? '#2a8a3e' : '#319a47'; g.fillRect(0, i * bh, W, bh + 0.5); }
   const r = seeded(7);
-  for (let i = 0; i < 6000; i++) {
+  for (let i = 0; i < 10000; i++) {
     g.fillStyle = r() < 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.07)';
     g.fillRect(r() * W, r() * H, 0.6, r() * 2 + 0.6);
   }
@@ -1146,8 +1150,8 @@ function makePitchCanvas() {
   g.beginPath(); g.arc(W / 2, H / 2, 2.5, 0, TAU); g.fill();
   const da = Math.acos(25 / 45);
   [true, false].forEach(function (top) {
-    g.strokeRect(80, top ? 10 : H - 110, 240, 100);
-    g.strokeRect(140, top ? 10 : H - 45, 120, 35);
+    g.strokeRect(W / 2 - 120, top ? 10 : H - 110, 240, 100);
+    g.strokeRect(W / 2 - 60, top ? 10 : H - 45, 120, 35);
     const spotY = top ? 85 : H - 85;
     g.beginPath(); g.arc(W / 2, spotY, 2, 0, TAU); g.fill();
     g.beginPath();
@@ -1161,7 +1165,7 @@ function makePitchCanvas() {
   return c;
 }
 
-const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(170, 210), new THREE.MeshStandardMaterial({ color: '#226b33', roughness: 1 }));
+const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(260, 300), new THREE.MeshStandardMaterial({ color: '#226b33', roughness: 1 }));
 groundMesh.rotation.x = -Math.PI / 2;
 groundMesh.position.y = -0.02;
 groundMesh.receiveShadow = true;
@@ -1220,10 +1224,10 @@ function addStand(x, z, len, rotY) {
   holder.add(base);
   scene.add(holder);
 }
-addStand(0, -52, 70, 0);
-addStand(0, 52, 70, Math.PI);
-addStand(33, 0, 110, -Math.PI / 2);
-addStand(-33, 0, 110, Math.PI / 2);
+const PW = W * S / 2, PH = H * S / 2; // half pitch size in world units
+addStand(0, -PH - 17, W * S + 50, 0);
+addStand(0, PH + 17, W * S + 50, Math.PI);
+addStand(-PW - 13, 0, H * S + 40, Math.PI / 2); // far side only: the camera sits on the near side
 
 function addBoard(x, z, len, rotY) {
   const mat = new THREE.MeshBasicMaterial({ map: boardTex });
@@ -1233,12 +1237,12 @@ function addBoard(x, z, len, rotY) {
   b.castShadow = true;
   scene.add(b);
 }
-addBoard(0, -40, 46, 0);
-addBoard(0, 40, 46, Math.PI);
-addBoard(22.5, 0, 82, -Math.PI / 2);
-addBoard(-22.5, 0, 82, Math.PI / 2);
+addBoard(0, -PH - 5, W * S + 6, 0);
+addBoard(0, PH + 5, W * S + 6, Math.PI);
+addBoard(PW + 2.5, 0, H * S + 12, -Math.PI / 2);
+addBoard(-PW - 2.5, 0, H * S + 12, Math.PI / 2);
 
-[[-29, -47], [29, -47], [-29, 47], [29, 47]].forEach(function (pp) {
+[[-PW - 9, -PH - 12], [PW + 9, -PH - 12], [-PW - 9, PH + 12], [PW + 9, PH + 12]].forEach(function (pp) {
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 30, 8), M('#4b5563'));
   pole.position.set(pp[0], 15, pp[1]);
   scene.add(pole);
@@ -1695,19 +1699,32 @@ for (let i = 0; i < 14; i++) {
   ringPool.push(m);
 }
 
-// ----- Camera follows the ball from behind your team -----
-const camT = { x: 0, z: 15 };
+// ----- Broadcast camera: high in the near-side stand, panning along the touchline with the ball -----
+// The pitch runs left to right on screen and you attack to the right.
+const camT = { x: 0, z: 0 };
 function updateCamera(bx, by, dt) {
-  const tx = wx(bx) * 0.7;
-  const tz = Math.max(-25, Math.min(24, wz(by)));
-  const k = 1 - Math.exp(-dt * 3.2);
+  const portrait = VH > VW;
+  const half = H * S / 2;
+  const tz = clamp(wz(by), -half + (portrait ? 6 : 14), half - (portrait ? 6 : 14));
+  const tx = wx(bx) * 0.35;
+  const k = 1 - Math.exp(-dt * 2.6);
   camT.x = lerp(camT.x, tx, k);
   camT.z = lerp(camT.z, tz, k);
   let sx = 0, sy = 0;
   if (shake > 0.3) { sx = rand(-1, 1) * shake * 0.05; sy = rand(-1, 1) * shake * 0.05; }
-  camera.position.set(camT.x * 0.8 + sx, 30 + sy, camT.z + 29);
-  camera.lookAt(camT.x, 0, camT.z - 8);
+  const dist = portrait ? 80 : 58, elev = 0.52; // about 30 degrees down onto the pitch
+  camera.position.set(camT.x + Math.cos(elev) * dist + sx, Math.sin(elev) * dist + sy, camT.z);
+  camera.lookAt(camT.x - 2, 0, camT.z);
   camera.updateMatrixWorld();
+}
+// Stick and keys are read relative to the screen: right is toward the goal you attack, up is the far touchline
+const _camF = new THREE.Vector3();
+function screenToPitchDir(sx, sy) {
+  camera.getWorldDirection(_camF);
+  let fx = _camF.x, fz = _camF.z;
+  const n = Math.hypot(fx, fz) || 1; fx /= n; fz /= n;
+  const rx = -fz, rz = fx; // screen right, on the ground
+  return { x: sx * rx - sy * fx, y: sx * rz - sy * fz };
 }
 
 // ----- Projection helpers between pitch, world and screen -----
@@ -1720,10 +1737,10 @@ function toScreen(px, py, h) {
   _vv.copy(_v).applyMatrix4(camera.matrixWorldInverse);
   const depth = -_vv.z;
   _v.project(camera);
-  return { x: (_v.x + 1) / 2 * W, y: (1 - _v.y) / 2 * H, ppu: depth > 0.1 ? (focal * S) / depth : 0, ok: depth > 0.1 };
+  return { x: (_v.x + 1) / 2 * VW, y: (1 - _v.y) / 2 * VH, ppu: depth > 0.1 ? (focal * S) / depth : 0, ok: depth > 0.1 };
 }
 function screenToPitch(sx, sy) {
-  _ndc.set((sx / W) * 2 - 1, -((sy / H) * 2 - 1));
+  _ndc.set((sx / VW) * 2 - 1, -((sy / VH) * 2 - 1));
   raycaster.setFromCamera(_ndc, camera);
   if (!raycaster.ray.intersectPlane(groundPlane, _hit)) return null;
   return { x: _hit.x / S + W / 2, y: _hit.z / S + H / 2 };
@@ -1741,19 +1758,23 @@ function groundArc(px, py, r, a0, a1) {
 // ---------- Display ----------
 let viewK = 1;
 function fit() {
-  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  // Fill the whole window; the overlay works in a virtual screen whose short side is 430 units
+  const cw = Math.max(1, window.innerWidth), ch = Math.max(1, window.innerHeight);
   const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-  const cw = Math.max(1, Math.floor(W * s)), ch = Math.max(1, Math.floor(H * s));
+  if (cw >= ch) { VH = 430; VW = 430 * cw / ch; } else { VW = 430; VH = 430 * ch / cw; }
   stage.style.width = cw + 'px';
   stage.style.height = ch + 'px';
   renderer.setPixelRatio(Math.min(dpr, 2));
   renderer.setSize(cw, ch, false);
-  viewK = (cw / W) * dpr;
-  overlay.width = Math.max(1, Math.round(W * viewK));
-  overlay.height = Math.max(1, Math.round(H * viewK));
-  camera.aspect = W / H;
+  viewK = (cw / VW) * dpr;
+  overlay.width = Math.max(1, Math.round(VW * viewK));
+  overlay.height = Math.max(1, Math.round(VH * viewK));
+  camera.aspect = cw / ch;
+  camera.fov = cw >= ch ? 30 : 38;
   camera.updateProjectionMatrix();
-  focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  focal = (VH / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const rot = document.getElementById('rotateTip');
+  if (rot) rot.hidden = !(isTouchDevice && ch > cw);
 }
 window.addEventListener('resize', fit);
 fit();
@@ -1912,7 +1933,7 @@ function drawScoreDigit(n, x, y, pop) {
 }
 
 function drawHUD() {
-  const px = W / 2 - 115, pw = 230;
+  const px = VW / 2 - 115, pw = 230;
   ctx.fillStyle = 'rgba(6,18,10,0.72)';
   roundRect(px, 14, pw, 40, 12); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.15)';
@@ -1932,10 +1953,10 @@ function drawHUD() {
 
   ctx.textAlign = 'center';
   ctx.font = 'bold 24px sans-serif';
-  drawScoreDigit(score.you, W / 2 - 22, 35, scorePop.you);
+  drawScoreDigit(score.you, VW / 2 - 22, 35, scorePop.you);
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.fillText('-', W / 2, 34);
-  drawScoreDigit(score.cpu, W / 2 + 22, 35, scorePop.cpu);
+  ctx.fillText('-', VW / 2, 34);
+  drawScoreDigit(score.cpu, VW / 2 + 22, 35, scorePop.cpu);
 
   const frac = Math.max(0, timeLeft) / 90;
   const low = timeLeft <= 10 && timeLeft > 0;
@@ -1946,7 +1967,7 @@ function drawHUD() {
   const secs = Math.max(0, Math.ceil(timeLeft));
   ctx.font = 'bold 13px sans-serif';
   ctx.fillStyle = low ? '#ff8080' : 'rgba(255,255,255,0.9)';
-  ctx.fillText(Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'), W / 2, 75);
+  ctx.fillText(Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'), VW / 2, 75);
   ctx.textBaseline = 'alphabetic';
 }
 
@@ -1980,18 +2001,18 @@ function drawControlMarker(x, y) {
 function drawHint() {
   if (hintTimer <= 0 || timeLeft <= 0 || menuOpen) return;
   const lines = MODES[controlMode].hint;
-  const y0 = controlMode === 'buttons' ? 88 : H - 92; // with touch buttons, sit under the timer instead
+  const y0 = controlMode === 'buttons' ? 88 : VH - 62; // with touch buttons, sit under the timer instead
   ctx.save();
   ctx.globalAlpha = Math.min(1, hintTimer / 30);
   ctx.font = 'bold 12px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(6,18,10,0.78)';
-  roundRect(W / 2 - 165, y0, 330, 46, 12); ctx.fill();
+  roundRect(VW / 2 - 165, y0, 330, 46, 12); ctx.fill();
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(lines[0], W / 2, y0 + 14);
+  ctx.fillText(lines[0], VW / 2, y0 + 14);
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  ctx.fillText(lines[1], W / 2, y0 + 32);
+  ctx.fillText(lines[1], VW / 2, y0 + 32);
   ctx.restore();
 }
 
@@ -2002,7 +2023,7 @@ function drawMessage() {
   const size = messageStyle === 'gold' ? 66 : (messageStyle === 'red' ? 42 : 46);
   ctx.save();
   ctx.globalAlpha = Math.min(1, messageTimer / 15);
-  ctx.translate(W / 2, H / 2 - 40);
+  ctx.translate(VW / 2, VH / 2 - 40);
   ctx.scale(s, s);
   if (messageStyle === 'gold') ctx.rotate(Math.sin(t * 0.15) * 0.04);
   ctx.font = '900 ' + size + 'px sans-serif';
@@ -2024,7 +2045,7 @@ function drawMessage() {
 function drawEndScreen() {
   if (endFade <= 0) return;
   ctx.fillStyle = 'rgba(0,0,0,' + (0.65 * endFade) + ')';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, VW, VH);
   const drop = (1 - easeOutBack(endFade)) * -80;
   const result = score.you > score.cpu ? 'You win!' : (score.you < score.cpu ? 'You lose' : 'Draw');
   ctx.save();
@@ -2035,15 +2056,15 @@ function drawEndScreen() {
   ctx.font = '900 46px sans-serif';
   ctx.lineWidth = 8;
   ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.strokeText(result, W / 2, H / 2 - 40 + drop);
+  ctx.strokeText(result, VW / 2, VH / 2 - 40 + drop);
   ctx.fillStyle = score.you > score.cpu ? '#ffe14d' : '#ffffff';
-  ctx.fillText(result, W / 2, H / 2 - 40 + drop);
+  ctx.fillText(result, VW / 2, VH / 2 - 40 + drop);
   ctx.font = 'bold 30px sans-serif';
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(score.you + '  -  ' + score.cpu, W / 2, H / 2 + 10 + drop);
+  ctx.fillText(score.you + '  -  ' + score.cpu, VW / 2, VH / 2 + 10 + drop);
   ctx.font = '18px sans-serif';
   ctx.globalAlpha = endFade * (0.55 + 0.45 * Math.sin(tick * 0.08));
-  ctx.fillText('Tap to play again', W / 2, H / 2 + 60);
+  ctx.fillText('Tap to play again', VW / 2, VH / 2 + 60);
   ctx.restore();
 }
 
@@ -2101,7 +2122,7 @@ function draw(a, dt) {
 
   // 2D overlay
   ctx.setTransform(viewK, 0, 0, viewK, 0, 0);
-  ctx.clearRect(0, 0, W, H);
+  ctx.clearRect(0, 0, VW, VH);
   drawTrail();
   drawParticles();
   if (controlMode === 'swipe' && drag && oi >= 0 && owner.team === 'you' && celebrate === 0 && timeLeft > 0) {
@@ -2112,7 +2133,7 @@ function draw(a, dt) {
   if (flashAlpha > 0.01) {
     ctx.globalAlpha = flashAlpha;
     ctx.fillStyle = flashColor;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, VW, VH);
     ctx.globalAlpha = 1;
   }
   drawHUD();
